@@ -1,0 +1,185 @@
+---
+title: "Homework 3"
+author: "Ngoc Duong"
+date: "11/7/2020"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(janitor)
+library(e1071)
+library(ModelMetrics)
+library(caret)
+library(microbenchmark)
+library(glmnet)
+library(broom)
+library(mgcv)
+library(data.table)
+library(RColorBrewer)
+library(gbm)
+library(nnet)
+library("grid")
+library("gridExtra")
+library("ada")
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+```
+
+
+
+
+```{r include = FALSE}
+## Decision plot function  
+decisionplot <- function(model, data, class,
+  resolution = 100, showgrid = TRUE, ...) {
+  cl <- data$class 
+  data <- data[,1:2]
+  k <- length(unique(cl))
+  # make grid
+  r <- sapply(data, range, na.rm = TRUE)
+  xs <- seq(r[1,1], r[2,1], length.out = resolution)
+  ys <- seq(r[1,2], r[2,2], length.out = resolution)
+  g <- cbind(rep(xs, each=resolution), rep(ys, time = resolution))
+  colnames(g) <- colnames(r)
+  g <- as.data.frame(g)
+  ### use predict function (class here)
+  p <- predict(model, g)
+  if(showgrid) points(g, col = as.integer(p)+1L, pch = ".")
+  z <- matrix(as.integer(p), nrow = resolution, byrow = TRUE)
+  contour(xs, ys, z, add = TRUE, drawlabels = FALSE,
+    lwd = 2, levels = (1:(k-1))+.5)
+  invisible(z)
+}
+```
+
+
+
+## Question 2
+
+**SVM linear classifier plot**
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+#read in ripley data
+train = fread("./PRNN/SYNTH.TR") %>% mutate(yc = factor(yc))
+test = fread("./PRNN/SYNTH.TE") %>% mutate(yc = factor(yc))
+#a) Construct a linear support vector classifier - use e1071
+set.seed(2020)
+svml.fit <-tune.svm(yc ~., data = train, kernel = "linear", preProc = c("scale", "center"),
+                    cost =exp(seq(-5,-1,len=20)))
+best.linear = svml.fit$best.model #get tuned model
+pred.linear = predict(best.linear, test[,-3]) #prediction on test set 
+
+#error on the test set and standard error of this test error statistic
+err.linear = mean(pred.linear != test$yc)
+se.err.linear = sd(abs(as.numeric(pred.linear) - as.numeric(test$yc)))/sqrt(nrow(test))
+
+plot(best.linear, train, symbolPalette = c("blue", "red"))
+```
+
+\pagebreak
+\newpage
+
+**SVM radial kernel plot**
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+#b) Construct a support vector classifier with Radial Kernel
+set.seed(2020)
+svmr.fit <-tune.svm(yc ~., data = train, 
+                    kernel = "radial", preProc = c("scale", "center"),
+                    cost =exp(seq(-5,0,len=10)),
+                    gamma = exp(seq(-7,0, len=10)))
+best.radial = svmr.fit$best.model #get best model
+pred.radial = predict(best.radial, test[,-3]) #prediction on test set 
+
+#error on the test set and standard error of this test error statistic
+err.radial = sum((pred.radial != test$yc))/length(test$yc)
+se.err.radial = sd(abs(as.numeric(pred.radial) - as.numeric(test$yc)))/sqrt(nrow(test))
+
+plot(best.radial, train, symbolPalette = c("orange", "red"))
+```
+
+
+```{r echo=FALSE, warning = FALSE, message = FALSE}
+#c) Construct a classifier using Adaboost with 50 boosting iterations
+set.seed(2020)
+bst = ada(yc~., train, 
+          iter=50, rpart.control(maxdepth=1))
+
+pred.bst = predict(bst, test)
+#error on the test set and standard error of this test error statistic
+err.bst = mean(pred.bst != test$yc)
+se.err.bst = sd(abs(as.numeric(pred.bst) - as.numeric(test$yc)))/sqrt(nrow(test))
+
+err_tibble = data.frame(`Linear classifier` = c(err.linear, se.err.linear),
+                    `Radial kernel` = c(err.radial, se.err.radial),
+                    `Adaboost` = c(err.bst, se.err.bst))
+rownames(err_tibble) = c("Test error rate", "Standard error")
+
+#result
+err_tibble %>% knitr::kable()
+
+# decision boundry
+plot(train[,1:2], col = as.numeric(train$yc)+3L, pch = as.numeric(train$yc)+3L, main = "Adaboost classification plot")
+par(new=TRUE)
+decisionplot(bst, train, class = yc)
+```
+
+
+**Discussion:**
+
+The three models have similar test prediction performance. The SVM model with radial kernel has the best performance on the test set (error rate 9%), compared with Adaboost (`r round(err.bst*100,1)`%) and SVM with a linear classifier (10.3%). The standard error of the misclassification rate is also lowest for the SVM model with the radial kernel. We can see from the plot that the classes are mixed on a 2D plane with a linear boundary. Using radial kernel maps the data onto higher-dimensional space where the classes can be separated more easily, which might explain the lower error rate. Both SVM models were tuned using a grid of cost parameters (linear classifier) and cost and sigma (radial kernel) so the reported performance was from the best tuned models. Adaboost model was not tuned but set to have stump as weak learner and 50 boosting iterations, so performance might improve with more tuning.
+
+In terms of the visualization of the models, we can see that the linear boundary for the SVM linear classifier is linear in the 2D plane, while the SVM radial kernel's separating plane from a higher-dimensional space translates to a non-linear boundary in 2D plane. AdaBoost used decision stumps to learn the classifier so the non-linear/non-smooth decision boundary shows this slow-learning pattern (reweighting the training points and adding one weak learner at a time).
+
+## Question 3
+
+Here, I fit a neural network with 1 hidden layer and 10 nodes in this layer. 
+
+```{r echo = FALSE}
+#spam data
+spam = read.csv("SPAM.csv")
+spam_train = spam %>% filter(testid == "FALSE") %>% select(-testid) %>% mutate(spam = ifelse(spam == "TRUE", 1, 0), spam = as.factor(spam))
+spam_test = spam %>% filter(testid == "TRUE") %>% select(-testid) %>% mutate(spam = ifelse(spam == "TRUE", 1, 0), spam = as.factor(spam))
+
+set.seed(1)
+unit = 10
+nn = nnet(spam ~ ., data = spam_train, preProc = c("scale", "center"),
+                 size=unit, skip=TRUE, MaxNWts=10000, trace=FALSE, maxit=100)
+pred.nnet = predict(nn, spam_test[,-1], response = "prob")
+pred.nnet = ifelse(pred.nnet > 0.5, 1, 0)
+
+#error rate
+nnet.err = mean(abs(as.numeric(pred.nnet) - (as.numeric(spam_test$spam)-1)))
+#nnet.se = sd(as.numeric(pred.nnet) - as.numeric(spam_test$spam))/sqrt(nrow(spam_test))
+
+#table for 
+err_tibble2 = data.frame(`Neural net` = round(nnet.err, 4),
+                    `Classification tree` = round(143/1536, 4))
+rownames(err_tibble2) = "Test error rate"
+
+#result
+err_tibble2 %>% knitr::kable()
+```
+
+Based on the classification tree in **section 9.2.5**, we can calculate the error rate of the tree as the proportion of misclassifications out of 1536 emails being classified. This is calculated as: (19+1+37+1+9+3+14+3+9+16+6+18+7)/1536 = 143/1536 = 0.093.
+
+The test error rate of the neural network with one hidden layer and `r unit` units in this layer is `r round(nnet.err, 4)`. In this case, we can see that neural network has very good performance and performs better than the tree on test data, despite not by a large margin. However, trees usually have small bias and large variance, so trees can classify training data well but have more inaccuracies on unseen data. 
+
+In terms of interpretability, trees are easy to interpret if they are not too big, and their high interpretability can be useful in many settings like clinical decision making. The neural network is a black-box model, which makes it difficult to explain the outcome/process compared to trees. Additionally, small changes in the specification of the neural network (number of hidden layers/within-layer nodes or activation function) may lead to different outcomes; therefore, we should take into account these characteristics given the the purpose and setting of the prediction task. 
+
+## Appendix 
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
+
